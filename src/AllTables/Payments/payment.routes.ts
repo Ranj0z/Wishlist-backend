@@ -1,35 +1,94 @@
-import { Router } from "express";
+import { Express } from "express";
 import {
   createPaymentController,
   deletePaymentController,
+  gatewayWebhookController,
   getAllPaymentsController,
   getPaymentByIDController,
   getPaymentsByItemController,
   getPaymentsByUserController,
+  retryPaymentController,
 } from "./payment.controller";
-
-const router = Router();
+import { requireAdmin, requireAuth } from "../../middleware/tokenAuth";
 
 // ==========================
 // Payment Routes
 // ==========================
+// NOTE: mounted directly on `app`, without the /api/v1 prefix used by the
+// Auth/Wishlists/Items routers. Intentional, payments-only inconsistency.
 
-// Create a new payment
-router.post("/payments", createPaymentController);
+const paymentRoutes = (app: Express) => {
+  // Create a new payment (fires the gateway STK push when paymentMethod is MPesa)
+  app.route("/payments").post(async (req, res, next) => {
+    try {
+      await createPaymentController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
 
-// Get all payments
-router.get("/payments", getAllPaymentsController);
+  // Get all payments
+  app.route("/payments").get(requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      await getAllPaymentsController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
 
-// Get payment by ID
-router.get("/payments/:id", getPaymentByIDController);
+  // Gateway webhook — no auth, verified by HMAC signature
+  app.route("/payments/gateway-webhook").post(async (req, res, next) => {
+    try {
+      await gatewayWebhookController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
 
-// Get payments by User ID
-router.get("/payments/users/:userId", getPaymentsByUserController);
+  // Get payments by User ID
+  app.route("/payments/users/:userId").get(async (req, res, next) => {
+    try {
+      await getPaymentsByUserController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
 
-// Get payments by Item ID
-router.get("/payments/items/:itemId", getPaymentsByItemController);
+  // Get payments by Item ID
+  app.route("/payments/items/:itemId").get(async (req, res, next) => {
+    try {
+      await getPaymentsByItemController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
 
-// Delete payment by ID
-router.delete("/payments/:id", deletePaymentController);
+  // Retry a Failed payment
+  app.route("/payments/:id/retry").post(requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      await retryPaymentController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
 
-export default router;
+  // Get payment by ID
+  app.route("/payments/:id").get(async (req, res, next) => {
+    try {
+      await getPaymentByIDController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Delete payment by ID
+  app.route("/payments/:id").delete(requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      await deletePaymentController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+};
+
+export default paymentRoutes;

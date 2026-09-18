@@ -64,7 +64,9 @@ export const paymentsTable = pgTable("payments", {
   totalAmount: decimal("total_amount", { precision: 10, scale: 2 }).notNull(),
   paymentStatus: PaymentStatusEnum("payment_status").default("Pending").notNull(),
   paymentMethod: PaymentMethodEnum("payment_method").notNull(),
-  transactionID: varchar("transaction_id", { length: 255 }),
+  transactionID: varchar("transaction_id", { length: 255 }), // holds the gateway's mpesaReceipt on success
+  gatewayReference: varchar("gateway_reference", { length: 255 }), // gateway's CheckoutRequestID
+  phone: varchar("phone", { length: 20 }), // normalized MSISDN (2547XXXXXXXX), used by the retry flow
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

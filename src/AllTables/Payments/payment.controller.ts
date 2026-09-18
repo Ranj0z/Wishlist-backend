@@ -6,7 +6,16 @@ import {
   getPaymentByIDService,
   getPaymentsByItemIDService,
   getPaymentsByUserIDService,
+  handleGatewayWebhookService,
+  markPaymentFailedService,
+  PaymentAlreadyInitiatedError,
+  PaymentNotFoundError,
+  retryPaymentService,
+  setGatewayReferenceService,
+  verifyGatewaySignature,
 } from "./payment.service";
+import { initiateGatewayStkPush } from "../../lib/paybillGateway";
+import { normalizePhoneNumber } from "../../utils/normalizePhoneNumber";
 
 // ==========================
 // Payment Controllers
@@ -15,16 +24,66 @@ import {
 // Create Payment
 export const createPaymentController = async (req: Request, res: Response) => {
   try {
-    const payment = req.body;
-    const created = await createPaymentService(payment);
+    // `phone` is client-supplied and is not part of the original payment shape —
+    // pull it out so it never reaches the insert as an unknown column.
+    const { phone, ...payment } = req.body;
+    const isMPesa = payment.paymentMethod === "MPesa";
+
+    let normalizedPhone: string | undefined;
+    if (isMPesa) {
+      if (!phone) {
+        return res
+          .status(400)
+          .json({ message: "phone is required for MPesa payments" });
+      }
+      try {
+        normalizedPhone = normalizePhoneNumber(phone);
+      } catch {
+        return res.status(400).json({ message: "Invalid phone number format" });
+      }
+    }
+
+    const created = await createPaymentService({
+      ...payment,
+      paymentStatus: "Pending",
+      ...(normalizedPhone ? { phone: normalizedPhone } : {}),
+    });
 
     if (!created) {
       return res.status(400).json({ message: "Payment not created" });
     }
 
-    return res
-      .status(201)
-      .json({ message: "Payment created successfully ✅", data: created });
+    // Non-MPesa methods keep their existing behavior
+    if (!isMPesa) {
+      return res
+        .status(201)
+        .json({ message: "Payment created successfully ✅", data: created });
+    }
+
+    try {
+      const { CheckoutRequestID } = await initiateGatewayStkPush({
+        phone: normalizedPhone!,
+        amount: Number(created.totalAmount),
+        orderRef: String(created.paymentId),
+        description: "Wishlist item payment",
+      });
+
+      const updated = await setGatewayReferenceService(
+        created.paymentId,
+        CheckoutRequestID
+      );
+
+      return res
+        .status(201)
+        .json({ message: "STK push sent ✅", data: updated ?? created });
+    } catch (error: any) {
+      // Keep the row for the audit trail, just mark it Failed
+      await markPaymentFailedService(created.paymentId);
+      return res.status(502).json({
+        error: error.response?.data?.error ?? error.message,
+        paymentId: created.paymentId,
+      });
+    }
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -124,5 +183,40 @@ export const deletePaymentController = async (req: Request, res: Response) => {
     return res.status(200).json({ message: "Payment deleted successfully ✅" });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
+  }
+};
+
+// Gateway Webhook (no auth — HMAC-verified via X-Signature)
+export const gatewayWebhookController = async (req: Request, res: Response) => {
+  try {
+    const signature = req.headers["x-signature"] as string | undefined;
+    if (!verifyGatewaySignature((req as any).rawBody, signature)) {
+      return res.status(401).json({ message: "Invalid signature" });
+    }
+    await handleGatewayWebhookService(req.body);
+    return res.status(200).json({ message: "ok" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// Retry a Failed Payment (admin only)
+export const retryPaymentController = async (req: Request, res: Response) => {
+  try {
+    const paymentId = parseInt(req.params.id);
+    if (isNaN(paymentId)) {
+      return res.status(400).json({ message: "Invalid Payment ID format" });
+    }
+
+    const result = await retryPaymentService(paymentId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    if (error instanceof PaymentNotFoundError) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+    if (error instanceof PaymentAlreadyInitiatedError) {
+      return res.status(409).json({ message: "Only Failed payments can be retried" });
+    }
+    return res.status(502).json({ error: error.response?.data?.error ?? error.message });
   }
 };
