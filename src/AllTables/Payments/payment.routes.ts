@@ -63,8 +63,8 @@ const paymentRoutes = (app: Express) => {
     }
   });
 
-  // Retry a Failed payment
-  app.route("/payments/:id/retry").post(requireAuth, requireAdmin, async (req, res, next) => {
+  // Retry a Failed payment — requires the retryToken issued at creation, no login
+  app.route("/payments/:id/retry").post(async (req, res, next) => {
     try {
       await retryPaymentController(req, res);
     } catch (error) {

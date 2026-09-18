@@ -67,6 +67,7 @@ export const paymentsTable = pgTable("payments", {
   transactionID: varchar("transaction_id", { length: 255 }), // holds the gateway's mpesaReceipt on success
   gatewayReference: varchar("gateway_reference", { length: 255 }), // gateway's CheckoutRequestID
   phone: varchar("phone", { length: 20 }), // normalized MSISDN (2547XXXXXXXX), used by the retry flow
+  retryToken: varchar("retry_token", { length: 64 }), // proof-of-possession secret returned at creation; required to retry without login
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

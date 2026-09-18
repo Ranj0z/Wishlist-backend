@@ -10,6 +10,10 @@ import { normalizePhoneNumber } from "../../utils/normalizePhoneNumber";
 // ==========================
 export class PaymentNotFoundError extends Error {}
 export class PaymentAlreadyInitiatedError extends Error {}
+export class RetryTokenMismatchError extends Error {}
+
+// Random opaque secret returned to the payer at creation; required to retry later
+export const generateRetryToken = () => crypto.randomBytes(24).toString("hex");
 
 // ==========================
 // Payment Services
@@ -132,11 +136,19 @@ export const handleGatewayWebhookService = async (payload: {
   }
 };
 
-// Re-initiate an STK push for a previously Failed payment
-export const retryPaymentService = async (paymentId: number) => {
+// Re-initiate an STK push for a previously Failed payment.
+// providedToken must match the retryToken issued at creation — this is the
+// no-login proof-of-possession check standing in for auth.
+export const retryPaymentService = async (
+  paymentId: number,
+  providedToken: string | undefined
+) => {
   const payment = await getPaymentByIDService(paymentId);
   if (!payment) throw new PaymentNotFoundError();
   if (payment.paymentStatus !== "Failed") throw new PaymentAlreadyInitiatedError();
+  if (!providedToken || providedToken !== payment.retryToken) {
+    throw new RetryTokenMismatchError();
+  }
   if (!payment.phone) throw new Error("No phone number stored for this payment");
 
   try {
@@ -146,12 +158,19 @@ export const retryPaymentService = async (paymentId: number) => {
       orderRef: String(payment.paymentId),
     });
 
+    // Rotate the token so a used-once retry link can't be replayed
+    const nextRetryToken = generateRetryToken();
+
     await db
       .update(paymentsTable)
-      .set({ gatewayReference: CheckoutRequestID, paymentStatus: "Pending" })
+      .set({
+        gatewayReference: CheckoutRequestID,
+        paymentStatus: "Pending",
+        retryToken: nextRetryToken,
+      })
       .where(eq(paymentsTable.paymentId, paymentId));
 
-    return { paymentId };
+    return { paymentId, retryToken: nextRetryToken };
   } catch (error) {
     await db
       .update(paymentsTable)

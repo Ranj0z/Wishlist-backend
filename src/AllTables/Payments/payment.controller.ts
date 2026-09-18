@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import {
   createPaymentService,
   deletePaymentService,
+  generateRetryToken,
   getAllPaymentsService,
   getPaymentByIDService,
   getPaymentsByItemIDService,
@@ -11,6 +12,7 @@ import {
   PaymentAlreadyInitiatedError,
   PaymentNotFoundError,
   retryPaymentService,
+  RetryTokenMismatchError,
   setGatewayReferenceService,
   verifyGatewaySignature,
 } from "./payment.service";
@@ -47,6 +49,7 @@ export const createPaymentController = async (req: Request, res: Response) => {
       ...payment,
       paymentStatus: "Pending",
       ...(normalizedPhone ? { phone: normalizedPhone } : {}),
+      ...(isMPesa ? { retryToken: generateRetryToken() } : {}),
     });
 
     if (!created) {
@@ -78,10 +81,11 @@ export const createPaymentController = async (req: Request, res: Response) => {
         .json({ message: "STK push sent ✅", data: updated ?? created });
     } catch (error: any) {
       // Keep the row for the audit trail, just mark it Failed
-      await markPaymentFailedService(created.paymentId);
+      const failed = await markPaymentFailedService(created.paymentId);
       return res.status(502).json({
         error: error.response?.data?.error ?? error.message,
         paymentId: created.paymentId,
+        retryToken: failed?.retryToken ?? created.retryToken,
       });
     }
   } catch (error: any) {
@@ -200,7 +204,7 @@ export const gatewayWebhookController = async (req: Request, res: Response) => {
   }
 };
 
-// Retry a Failed Payment (admin only)
+// Retry a Failed Payment — open to whoever holds the retryToken issued at creation
 export const retryPaymentController = async (req: Request, res: Response) => {
   try {
     const paymentId = parseInt(req.params.id);
@@ -208,7 +212,8 @@ export const retryPaymentController = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Invalid Payment ID format" });
     }
 
-    const result = await retryPaymentService(paymentId);
+    const { retryToken } = req.body ?? {};
+    const result = await retryPaymentService(paymentId, retryToken);
     return res.status(200).json(result);
   } catch (error: any) {
     if (error instanceof PaymentNotFoundError) {
@@ -216,6 +221,9 @@ export const retryPaymentController = async (req: Request, res: Response) => {
     }
     if (error instanceof PaymentAlreadyInitiatedError) {
       return res.status(409).json({ message: "Only Failed payments can be retried" });
+    }
+    if (error instanceof RetryTokenMismatchError) {
+      return res.status(403).json({ message: "Invalid or missing retry token" });
     }
     return res.status(502).json({ error: error.response?.data?.error ?? error.message });
   }
