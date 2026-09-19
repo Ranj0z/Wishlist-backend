@@ -5,6 +5,7 @@ import userRoutes from "./AllTables/Auth/auth.routes";
 import wishlistRoutes from "./AllTables/Wishlists/wishlist.routes";
 import itemRoutes from "./AllTables/Items/item.routes";
 import paymentRoutes from "./AllTables/Payments/payment.routes";
+import ticketRoutes from "./AllTables/Tickets/ticket.routes";
 
 const app = express();
 
@@ -22,11 +23,12 @@ app.get("/", (req, res) => {
   res.send("Hello Express! 🚀");
 });
 
-// API routes with versioning
-app.use("/api/v1", userRoutes);
-app.use("/api/v1", wishlistRoutes);
-app.use("/api/v1", itemRoutes);
-app.use("/api/v1", paymentRoutes);
+// API routes (flat, no version prefix — frontend calls these paths directly)
+app.use(userRoutes);
+app.use(wishlistRoutes);
+app.use(itemRoutes);
+app.use(paymentRoutes);
+app.use(ticketRoutes);
 
 // ==========================
 // Start server
