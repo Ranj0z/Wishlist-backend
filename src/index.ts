@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 
 // Import routers
 import userRoutes from "./AllTables/Auth/auth.routes";
@@ -13,6 +14,8 @@ const app = express();
 // Middleware
 // ==========================
 app.use(express.json());
+
+app.use(cors({ origin: "https://wishlist-client-lime.vercel.app" }));
 
 // ==========================
 // Routes
