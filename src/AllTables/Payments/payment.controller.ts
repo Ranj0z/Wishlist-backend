@@ -1,93 +1,93 @@
 import { Request, Response } from "express";
 import {
-  createPaymentService,
+  checkoutService,
   deletePaymentService,
-  generateRetryToken,
+  donateToWalletService,
+  EmptyCheckoutError,
+  expireStalePendingPaymentsService,
   getAllPaymentsService,
   getPaymentByIDService,
   getPaymentsByItemIDService,
   getPaymentsByUserIDService,
   handleGatewayWebhookService,
-  markPaymentFailedService,
+  InsufficientStockError,
+  InsufficientWalletBalanceError,
   PaymentAlreadyInitiatedError,
   PaymentNotFoundError,
   retryPaymentService,
   RetryTokenMismatchError,
-  setGatewayReferenceService,
   verifyGatewaySignature,
+  WalletRequiresLoginError,
 } from "./payment.service";
-import { initiateGatewayStkPush } from "../../lib/paybillGateway";
-import { normalizePhoneNumber } from "../../utils/normalizePhoneNumber";
 
 // ==========================
 // Payment Controllers
 // ==========================
 
-// Create Payment
-export const createPaymentController = async (req: Request, res: Response) => {
+// Checkout: pick multiple items from one wishlist, pay the total in one go.
+// Body: { wishlistId, items: [{ itemId, quantity }], paymentMethod, phone?, guestName? }
+// No login required (req.user is populated by optionalAuth when a token is present).
+export const checkoutController = async (req: Request, res: Response) => {
   try {
-    // `phone` is client-supplied and is not part of the original payment shape —
-    // pull it out so it never reaches the insert as an unknown column.
-    const { phone, ...payment } = req.body;
-    const isMPesa = payment.paymentMethod === "MPesa";
+    const { wishlistId, items, paymentMethod, phone, guestName } = req.body;
 
-    let normalizedPhone: string | undefined;
-    if (isMPesa) {
-      if (!phone) {
-        return res
-          .status(400)
-          .json({ message: "phone is required for MPesa payments" });
-      }
-      try {
-        normalizedPhone = normalizePhoneNumber(phone);
-      } catch {
-        return res.status(400).json({ message: "Invalid phone number format" });
-      }
+    if (!wishlistId || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "wishlistId and a non-empty items array are required" });
     }
 
-    const created = await createPaymentService({
-      ...payment,
-      paymentStatus: "Pending",
-      ...(normalizedPhone ? { phone: normalizedPhone } : {}),
-      ...(isMPesa ? { retryToken: generateRetryToken() } : {}),
+    const result = await checkoutService({
+      wishlistId: Number(wishlistId),
+      items,
+      paymentMethod,
+      userId: req.user?.userId,
+      guestName,
+      phone,
     });
 
-    if (!created) {
-      return res.status(400).json({ message: "Payment not created" });
+    if ((result as any).status === 502) {
+      return res.status(502).json(result);
+    }
+    return res.status(201).json(result);
+  } catch (error: any) {
+    if (error instanceof EmptyCheckoutError) {
+      return res.status(400).json({ message: "No items in checkout" });
+    }
+    if (error instanceof InsufficientStockError) {
+      return res.status(409).json({ message: error.message, itemId: error.itemId });
+    }
+    if (error instanceof WalletRequiresLoginError) {
+      return res.status(401).json({ message: error.message });
+    }
+    if (error instanceof InsufficientWalletBalanceError) {
+      return res.status(402).json({ message: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// Donate an open amount to someone's wallet.
+// Body: { targetUserId, amount, paymentMethod, phone?, guestName? }
+export const donateController = async (req: Request, res: Response) => {
+  try {
+    const { targetUserId, amount, paymentMethod, phone, guestName } = req.body;
+
+    if (!targetUserId || !amount) {
+      return res.status(400).json({ message: "targetUserId and amount are required" });
     }
 
-    // Non-MPesa methods keep their existing behavior
-    if (!isMPesa) {
-      return res
-        .status(201)
-        .json({ message: "Payment created successfully ✅", data: created });
+    const result = await donateToWalletService({
+      targetUserId: Number(targetUserId),
+      amount: String(amount),
+      paymentMethod,
+      userId: req.user?.userId,
+      guestName,
+      phone,
+    });
+
+    if ((result as any).status === 502) {
+      return res.status(502).json(result);
     }
-
-    try {
-      const { CheckoutRequestID } = await initiateGatewayStkPush({
-        phone: normalizedPhone!,
-        amount: Number(created.totalAmount),
-        orderRef: String(created.paymentId),
-        description: "Wishlist item payment",
-      });
-
-      const updated = await setGatewayReferenceService(
-        created.paymentId,
-        CheckoutRequestID
-      );
-
-      return res
-        .status(201)
-        .json({ message: "STK push sent ✅", data: updated ?? created });
-    } catch (error: any) {
-      // Keep the row for the audit trail, just mark it Failed
-      const failed = await markPaymentFailedService(created.paymentId);
-      return res.status(502).json({
-        error: error.response?.data?.error ?? error.message,
-        paymentId: created.paymentId,
-        retryToken: failed?.retryToken ?? created.retryToken,
-      });
-    }
+    return res.status(201).json(result);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -225,6 +225,21 @@ export const retryPaymentController = async (req: Request, res: Response) => {
     if (error instanceof RetryTokenMismatchError) {
       return res.status(403).json({ message: "Invalid or missing retry token" });
     }
+    if (error instanceof InsufficientStockError) {
+      return res.status(409).json({ message: "Item no longer available in the quantity requested", itemId: error.itemId });
+    }
     return res.status(502).json({ error: error.response?.data?.error ?? error.message });
+  }
+};
+
+// Admin/scheduler endpoint: release stock holds for Pending payments the
+// gateway never confirmed (STK prompt abandoned, network drop, etc.).
+// Intended to be called periodically by an external scheduler, not by users.
+export const expireStalePaymentsController = async (req: Request, res: Response) => {
+  try {
+    const result = await expireStalePendingPaymentsService();
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 };

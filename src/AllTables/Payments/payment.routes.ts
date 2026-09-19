@@ -1,7 +1,9 @@
 import { Express } from "express";
 import {
-  createPaymentController,
+  checkoutController,
   deletePaymentController,
+  donateController,
+  expireStalePaymentsController,
   gatewayWebhookController,
   getAllPaymentsController,
   getPaymentByIDController,
@@ -9,7 +11,7 @@ import {
   getPaymentsByUserController,
   retryPaymentController,
 } from "./payment.controller";
-import { requireAdmin, requireAuth } from "../../middleware/tokenAuth";
+import { optionalAuth, requireAdmin, requireAuth } from "../../middleware/tokenAuth";
 
 // ==========================
 // Payment Routes
@@ -18,10 +20,23 @@ import { requireAdmin, requireAuth } from "../../middleware/tokenAuth";
 // Auth/Wishlists/Items routers. Intentional, payments-only inconsistency.
 
 const paymentRoutes = (app: Express) => {
-  // Create a new payment (fires the gateway STK push when paymentMethod is MPesa)
-  app.route("/payments").post(async (req, res, next) => {
+  // Checkout — pick multiple items from one wishlist, pay the total in one
+  // call. No login required (optionalAuth attaches req.user if a token is
+  // present, but never rejects the request).
+  app.route("/wishlists/:wishlistId/checkout").post(optionalAuth, async (req, res, next) => {
     try {
-      await createPaymentController(req, res);
+      req.body.wishlistId = req.params.wishlistId;
+      await checkoutController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Donate an open amount to a user's wallet.
+  app.route("/wallet/:targetUserId/donate").post(optionalAuth, async (req, res, next) => {
+    try {
+      req.body.targetUserId = req.params.targetUserId;
+      await donateController(req, res);
     } catch (error) {
       next(error);
     }
@@ -67,6 +82,17 @@ const paymentRoutes = (app: Express) => {
   app.route("/payments/:id/retry").post(async (req, res, next) => {
     try {
       await retryPaymentController(req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Release stock holds for abandoned Pending payments. Meant for an
+  // external scheduler to call periodically — admin-gated since it's not a
+  // user-facing action.
+  app.route("/payments/expire-stale").post(requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+      await expireStalePaymentsController(req, res);
     } catch (error) {
       next(error);
     }
