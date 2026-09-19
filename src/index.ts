@@ -1,5 +1,4 @@
 import express from "express";
-import cors from "cors";
 
 // Import routers
 import userRoutes from "./AllTables/Auth/auth.routes";
@@ -9,13 +8,21 @@ import paymentRoutes from "./AllTables/Payments/payment.routes";
 import ticketRoutes from "./AllTables/Tickets/ticket.routes";
 
 const app = express();
+import cors from "cors";
+import { logger } from './middleware/logger';
 
 // ==========================
 // Middleware
 // ==========================
 app.use(express.json());
 
-app.use(cors({ origin: "https://wishlist-client-lime.vercel.app" }));
+
+app.use(logger);
+
+  app.use(cors({
+    origin: "https://wishlist-client-lime.vercel.app",
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE"]
+  }));
 
 // ==========================
 // Routes
